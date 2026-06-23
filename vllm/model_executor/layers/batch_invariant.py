@@ -129,6 +129,74 @@ def matmul_kernel_persistent(
         tl.store(c_ptrs, c, mask=c_mask)
 
 
+def _select_matmul_config(M: int, N: int, K: int, dtype: torch.dtype) -> dict[str, int]:
+    """
+    Select optimal block sizes for matmul based on problem dimensions.
+
+    Adaptive block size selection improves performance by matching tile sizes
+    to matrix shapes, reducing wasted computation on small matrices and
+    improving cache locality on large ones.
+    """
+    device_sm = current_platform.get_device_capability()[0]
+
+    base_configs = {
+        torch.bfloat16: {
+            "BLOCK_SIZE_M": 128,
+            "BLOCK_SIZE_N": 128,
+            "BLOCK_SIZE_K": 64,
+            "GROUP_SIZE_M": 8,
+            "num_stages": 3,
+            "num_warps": 8,
+        },
+        torch.float16: {
+            "BLOCK_SIZE_M": 128,
+            "BLOCK_SIZE_N": _fp16_block_size_n,
+            "BLOCK_SIZE_K": 64,
+            "GROUP_SIZE_M": 8,
+            "num_stages": 3,
+            "num_warps": 8,
+        },
+        torch.float32: {
+            "BLOCK_SIZE_M": 128,
+            "BLOCK_SIZE_N": 128,
+            "BLOCK_SIZE_K": 32,
+            "GROUP_SIZE_M": 8,
+            "num_stages": 3,
+            "num_warps": 8,
+        },
+    }
+
+    config = base_configs[dtype].copy()
+
+    if M <= 64 and N <= 64:
+        config["BLOCK_SIZE_M"] = 64
+        config["BLOCK_SIZE_N"] = 64
+        config["num_warps"] = 4
+        config["GROUP_SIZE_M"] = 4
+    elif M >= 4 * N and N <= 512:
+        config["BLOCK_SIZE_M"] = 256
+        config["BLOCK_SIZE_N"] = 64
+        config["GROUP_SIZE_M"] = 16
+    elif N >= 4 * M and M <= 512:
+        config["BLOCK_SIZE_M"] = 64
+        config["BLOCK_SIZE_N"] = 256
+        config["GROUP_SIZE_M"] = 4
+    elif M >= 2048 and N >= 2048:
+        if device_sm >= 90:
+            config["BLOCK_SIZE_M"] = 256
+            config["BLOCK_SIZE_N"] = 256
+            config["BLOCK_SIZE_K"] = 128 if dtype != torch.float32 else 64
+            config["num_stages"] = 4
+        else:
+            config["BLOCK_SIZE_M"] = 192
+            config["BLOCK_SIZE_N"] = 192
+
+    if K >= 8192:
+        config["BLOCK_SIZE_K"] = 128 if dtype != torch.float32 else 64
+
+    return config
+
+
 def matmul_persistent(
     a: torch.Tensor, b: torch.Tensor, bias: torch.Tensor | None = None
 ):
@@ -155,32 +223,7 @@ def matmul_persistent(
             ),
         )
 
-    configs = {
-        torch.bfloat16: {
-            "BLOCK_SIZE_M": 128,
-            "BLOCK_SIZE_N": 128,
-            "BLOCK_SIZE_K": 64,
-            "GROUP_SIZE_M": 8,
-            "num_stages": 3,
-            "num_warps": 8,
-        },
-        torch.float16: {
-            "BLOCK_SIZE_M": 128,
-            "BLOCK_SIZE_N": _fp16_block_size_n,
-            "BLOCK_SIZE_K": 64,
-            "GROUP_SIZE_M": 8,
-            "num_stages": 3,
-            "num_warps": 8,
-        },
-        torch.float32: {
-            "BLOCK_SIZE_M": 128,
-            "BLOCK_SIZE_N": 128,
-            "BLOCK_SIZE_K": 32,
-            "GROUP_SIZE_M": 8,
-            "num_stages": 3,
-            "num_warps": 8,
-        },
-    }
+    config = _select_matmul_config(M, N, K, dtype)
     matmul_kernel_persistent[grid](
         a,
         b,
@@ -200,7 +243,7 @@ def matmul_persistent(
         B_LARGE=b.numel() > 2**31,
         C_LARGE=c.numel() > 2**31,
         HAS_BIAS=bias is not None,
-        **configs[dtype],
+        **config,
     )
     return c
 
@@ -670,31 +713,7 @@ def bmm_batch_invariant(a, b, *, out=None):
         assert out.dtype == dtype and out.device == a.device, "out tensor mismatch"
         c = out
 
-    configs = {
-        torch.bfloat16: {
-            "BLOCK_SIZE_M": 128,
-            "BLOCK_SIZE_N": 128,
-            "BLOCK_SIZE_K": 64,
-            "num_stages": 3,
-            "num_warps": 8,
-        },
-        torch.float16: {
-            "BLOCK_SIZE_M": 128,
-            "BLOCK_SIZE_N": _fp16_block_size_n,
-            "BLOCK_SIZE_K": 64,
-            "num_stages": 3,
-            "num_warps": 8,
-        },
-        torch.float32: {
-            "BLOCK_SIZE_M": 128,
-            "BLOCK_SIZE_N": 128,
-            "BLOCK_SIZE_K": 32,
-            "num_stages": 3,
-            "num_warps": 8,
-        },
-    }
-
-    cfg = configs[dtype]
+    cfg = _select_matmul_config(M, N, K, dtype)
     # grid = (B, num_tiles_per_matrix)
     grid = (
         B,
