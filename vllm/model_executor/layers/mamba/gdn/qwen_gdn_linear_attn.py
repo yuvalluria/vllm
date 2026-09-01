@@ -795,6 +795,19 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
 
         return mixed_qkv_out, z_out, b_out, a_out
 
+    def _bi_cu01(self, device: torch.device) -> torch.Tensor:
+        """Cached [0, 1] cu_seqlens for per-sequence decode under
+        VLLM_BATCH_INVARIANT. Building this with torch.tensor() inside the
+        decode loop is an H2D copy from pageable memory, which CUDA graph
+        capture rejects; it is also num_decodes * num_layers pointless copies
+        per step. Populated during warmup, before any capture begins.
+        """
+        t = getattr(self, "_bi_cu01_cache", None)
+        if t is None or t.device != device:
+            t = torch.tensor([0, 1], dtype=torch.int32, device=device)
+            self._bi_cu01_cache = t
+        return t
+
     def rearrange_mixed_qkv(self, mixed_qkv):
         """Split packed qkv into contiguous (1, seq, heads, dim) tensors.
 
@@ -922,7 +935,15 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                             "VLLM_BATCH_INVARIANT is not supported with "
                             "speculative decoding on GDN_ATTN."
                         )
-                    if _meta.non_spec_query_start_loc is not None:
+                    if _meta.num_prefills == 0:
+                        # Pure decode: every non-spec sequence contributes
+                        # exactly one token, so the cumulative boundaries are
+                        # [0, 1, ..., num_tokens]. Derive them from the token
+                        # count rather than syncing non_spec_query_start_loc to
+                        # the host: a D2H copy is illegal during CUDA graph
+                        # capture, and the trip count must be static anyway.
+                        _bi_cu = list(range(num_tokens + 1))
+                    elif _meta.non_spec_query_start_loc is not None:
                         _bi_cu = _meta.non_spec_query_start_loc.tolist()
         if _bi_cu is not None:
             mixed_qkvz = torch.cat(
@@ -1572,9 +1593,7 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                         v=value_decode[:, _i : _i + 1],
                         initial_state=ssm_state,
                         inplace_final_state=True,
-                        cu_seqlens=torch.tensor(
-                            [0, 1], dtype=torch.int32, device=device_sd
-                        ),
+                        cu_seqlens=self._bi_cu01(device_sd),
                         ssm_state_indices=_si_sd,
                         use_qk_l2norm_in_kernel=True,
                     )
@@ -1689,9 +1708,7 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                         v=value_non_spec[:, _i : _i + 1],
                         initial_state=ssm_state,
                         inplace_final_state=True,
-                        cu_seqlens=torch.tensor(
-                            [0, 1], dtype=torch.int32, device=device
-                        ),
+                        cu_seqlens=self._bi_cu01(device),
                         ssm_state_indices=_si_dec,
                         use_qk_l2norm_in_kernel=True,
                     )
