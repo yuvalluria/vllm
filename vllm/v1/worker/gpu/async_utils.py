@@ -176,7 +176,13 @@ class AsyncOutput(AsyncModelRunnerOutput):
             self.copy_event.record(copy_stream)
 
     def get_output(self) -> ModelRunnerOutput:
-        self.copy_event.synchronize()
+        try:
+            # Use 30 second timeout to prevent indefinite hangs if GPU kernel is stuck
+            self.copy_event.synchronize(timeout=30)
+        except Exception as e:
+            raise RuntimeError(
+                f"GPU copy operation timed out after 30s (GPU kernel may be hung): {e}"
+            )
 
         # NOTE(woosuk): The following code is to ensure compatibility with
         # the existing model runner.
@@ -265,7 +271,13 @@ class AsyncPoolingOutput(AsyncModelRunnerOutput):
             pooler_output = list(self.pooler_output_cpu.unbind(dim=0))
         else:
             pooler_output = self.pooler_output_cpu
-        self.copy_event.synchronize()
+        try:
+            # Use 30 second timeout to prevent indefinite hangs if GPU kernel is stuck
+            self.copy_event.synchronize(timeout=30)
+        except Exception as e:
+            raise RuntimeError(
+                f"GPU copy operation timed out after 30s (GPU kernel may be hung): {e}"
+            )
         self.model_runner_output.pooler_output = pooler_output
         return self.model_runner_output
 

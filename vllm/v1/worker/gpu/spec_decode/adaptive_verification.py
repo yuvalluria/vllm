@@ -378,7 +378,13 @@ class AdaptiveVerificationManager:
         num_reqs = input_batch.num_reqs
         ready_idx = self._stale_idx ^ 1
         with gpu_sync_allowed():
-            self._copy_events[ready_idx].synchronize()
+            try:
+                # Use 30 second timeout to prevent indefinite hangs if GPU kernel is stuck
+                self._copy_events[ready_idx].synchronize(timeout=30)
+            except Exception as e:
+                raise RuntimeError(
+                    f"GPU copy operation timed out after 30s (GPU kernel may be hung): {e}"
+                )
         if self._pending_resets:
             self._stale_confidences[ready_idx].np[self._pending_resets] = 1.0
             self._pending_resets.clear()

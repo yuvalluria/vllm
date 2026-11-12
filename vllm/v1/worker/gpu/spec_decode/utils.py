@@ -115,7 +115,13 @@ class DraftTokensHandler:
         Requests without retained drafts are omitted.
         """
         if self._copy_pending:
-            self.copy_event.synchronize()
+            try:
+                # Use 30 second timeout to prevent indefinite hangs if GPU kernel is stuck
+                self.copy_event.synchronize(timeout=30)
+            except Exception as e:
+                raise RuntimeError(
+                    f"GPU copy operation timed out after 30s (GPU kernel may be hung): {e}"
+                )
             self._copy_pending = False
 
         drafts_by_req = self._draft_tokens_by_req
