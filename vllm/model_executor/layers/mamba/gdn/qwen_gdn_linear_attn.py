@@ -841,7 +841,6 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         # from CPU literals once CUDA graph capture has started.
         self._bi_decode_cu: torch.Tensor | None = None
         ba_method = self.in_proj_ba.quant_method
->>>>>>> 740a12b5a8 (fix(gdn): disable packed-decode fast path under batch invariance)
         if (
             overlap_ba_proj
             and current_platform.is_cuda()
