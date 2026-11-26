@@ -642,7 +642,8 @@ def _topk_topp_kernel(
                 std_logit = tl.sqrt(
                     tl.maximum(sq_avg_logit - avg_logit * avg_logit, 0.0)
                 )
-                max_sample = avg_logit + std_logit * 10.0
+                # Initialize max_sample with a safe upper bound from first block
+                max_sample_candidate = avg_logit + std_logit * 10.0
                 sum_exp_logits = 0.0
 
                 # First pass: compute max and min logits and sum_exp_logits
@@ -660,6 +661,16 @@ def _topk_topp_kernel(
                     )
                     min_logit = tl.minimum(min_logit, tl.min(finite_blk))
 
+                # Use actual max_logit for normalization to avoid underflow
+                # when max_sample_candidate is too negative (issue #68411).
+                max_sample = tl.minimum(max_sample_candidate, max_logit)
+
+                for i in range(0, NUM_TILES):
+                    offs_n = i * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+                    mask_n = offs_n < VOCAB_SIZE
+                    logits_blk = tl.load(
+                        LOGITS_ROW + offs_n, mask=mask_n, other=-float("inf")
+                    )
                     probs_blk = tl.exp(logits_blk - max_sample)
                     probs_blk = tl.where(mask_n, probs_blk, 0.0)
                     sum_exp_logits += tl.sum(probs_blk)
