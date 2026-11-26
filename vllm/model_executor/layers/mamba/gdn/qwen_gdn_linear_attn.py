@@ -2081,7 +2081,7 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         Each decode step carries exactly one token per request, so the fused
         kernel is handed one sequence at a time. That makes a request's output
         depend only on its own state, never on how many neighbours shared the
-        step.
+        step. Per-request isolation prevents state leakage across batch.
         """
         if self._bi_decode_cu is None or self._bi_decode_cu.device != q.device:
             self._bi_decode_cu = torch.tensor(
@@ -2091,11 +2091,13 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         outs = []
         last = None
         for i in range(num_decodes):
-            # Gather per-request state to avoid cross-request contamination
-            state_idx_i = state_indices[i : i + 1]
-            initial_state_i = ssm_state[state_idx_i]
+            # Create isolated state copy for this request to avoid cross-batch contamination
+            # ssm_state may be shared across multiple requests; we need per-request isolation
+            state_idx = state_indices[i : i + 1]
+            # Gather the state for this specific request (state_indices tells us which row)
+            isolated_state = ssm_state[state_idx].clone()
 
-            out_i, last_i = fused_sigmoid_gating_delta_rule_update(
+            out_i, last = fused_sigmoid_gating_delta_rule_update(
                 A_log=self.A_log,
                 a=a[i : i + 1],
                 b=b[i : i + 1],
@@ -2103,16 +2105,15 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                 q=q[:, i : i + 1],
                 k=k[:, i : i + 1],
                 v=v[:, i : i + 1],
-                initial_state=initial_state_i,
+                initial_state=isolated_state,
                 inplace_final_state=False,
                 cu_seqlens=cu,
                 ssm_state_indices=torch.tensor([0], dtype=torch.int32, device=q.device),
                 use_qk_l2norm_in_kernel=True,
             )
             outs.append(out_i)
-            # Scatter the updated state back to its proper place in ssm_state
-            scatter_states(ssm_state, last_i, state_idx_i)
-            last = last_i
+            # Update the ssm_state with the new state for this request
+            scatter_states(ssm_state, last, state_idx)
         return torch.cat(outs, dim=1), last
 
     def _forward_core(
