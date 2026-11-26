@@ -2089,9 +2089,9 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             )
         cu = self._bi_decode_cu
         outs = []
-        states = []
+        last = None
         for i in range(num_decodes):
-            out_i, state_i = fused_sigmoid_gating_delta_rule_update(
+            out_i, last = fused_sigmoid_gating_delta_rule_update(
                 A_log=self.A_log,
                 a=a[i : i + 1],
                 b=b[i : i + 1],
@@ -2106,13 +2106,9 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                 use_qk_l2norm_in_kernel=True,
             )
             outs.append(out_i)
-            states.append(state_i)
-
-        # Gather and scatter all final states back (like prefill batch-inv does)
-        final_states = torch.cat(states, dim=0)
-        scatter_states(ssm_state, final_states, state_indices)
-
-        return torch.cat(outs, dim=1), states[-1]
+            # Scatter state back immediately (batch size 1 scatter per iteration)
+            scatter_states(ssm_state, last, state_indices[i : i + 1])
+        return torch.cat(outs, dim=1), last
 
     def _forward_core(
         self,
