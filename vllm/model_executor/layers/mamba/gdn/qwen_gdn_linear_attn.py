@@ -2088,16 +2088,14 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                 [0, 1], dtype=torch.int32, device=q.device
             )
         cu = self._bi_decode_cu
-
-        # Work with a copy of ssm_state to prevent cross-iteration contamination.
-        # Each iteration processes one decode request; without isolation, the
-        # in-place state updates from one request leak into the next.
-        working_state = ssm_state.clone()
-
         outs = []
         last = None
         for i in range(num_decodes):
-            out_i, last = fused_sigmoid_gating_delta_rule_update(
+            # Gather initial state for this request only (batch size 1)
+            state_idx = state_indices[i : i + 1]
+            initial_state_i = ssm_state[state_idx]
+
+            out_i, state_i = fused_sigmoid_gating_delta_rule_update(
                 A_log=self.A_log,
                 a=a[i : i + 1],
                 b=b[i : i + 1],
@@ -2105,16 +2103,16 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                 q=q[:, i : i + 1],
                 k=k[:, i : i + 1],
                 v=v[:, i : i + 1],
-                initial_state=working_state,
-                inplace_final_state=True,
+                initial_state=initial_state_i,
+                inplace_final_state=False,
                 cu_seqlens=cu,
-                ssm_state_indices=state_indices[i : i + 1],
+                ssm_state_indices=torch.tensor([0], dtype=torch.int32, device=q.device),
                 use_qk_l2norm_in_kernel=True,
             )
             outs.append(out_i)
-
-        # Copy updated states back to original ssm_state for the caller
-        ssm_state.copy_(working_state)
+            # Update the state for this request (don't modify shared tensor in-place)
+            ssm_state[state_idx] = state_i
+            last = state_i
         return torch.cat(outs, dim=1), last
 
     def _forward_core(
