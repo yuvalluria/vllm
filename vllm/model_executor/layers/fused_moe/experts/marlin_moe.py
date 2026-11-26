@@ -56,6 +56,40 @@ from vllm.platforms import current_platform
 from vllm.scalar_type import ScalarType, scalar_types
 
 
+def _canonicalize_sorted_token_ids(
+    sorted_token_ids: torch.Tensor, expert_ids: torch.Tensor
+) -> torch.Tensor:
+    """Canonicalize token ordering within each expert for deterministic reduction.
+
+    Marlin's split-K reduction order depends on physical block positions, which can
+    vary with equivalent token orderings. This canonicalizes the ordering within each
+    expert region to ensure deterministic output (issue #52525).
+
+    Args:
+        sorted_token_ids: Token IDs sorted by expert (shape: [num_tokens])
+        expert_ids: Expert assignment for each token (shape: [num_tokens])
+
+    Returns:
+        Canonicalized sorted_token_ids with deterministic within-expert ordering
+    """
+    if sorted_token_ids.numel() == 0:
+        return sorted_token_ids
+
+    unique_experts = torch.unique(expert_ids, sorted=True)
+    result = torch.empty_like(sorted_token_ids)
+    offset = 0
+
+    for expert in unique_experts:
+        mask = expert_ids == expert
+        num_tokens_in_expert = mask.sum().item()
+        expert_tokens = sorted_token_ids[mask]
+        canonicalized = torch.sort(expert_tokens)[0]
+        result[offset : offset + num_tokens_in_expert] = canonicalized
+        offset += num_tokens_in_expert
+
+    return result
+
+
 def _fused_marlin_moe(
     hidden_states: torch.Tensor,
     w1: torch.Tensor,
@@ -318,6 +352,8 @@ def fused_marlin_moe(
         ignore_invalid_experts=True,
     )
 
+    sorted_token_ids = _canonicalize_sorted_token_ids(sorted_token_ids, expert_ids)
+
     assert activation is not None
     moe_output = _fused_marlin_moe(
         hidden_states=hidden_states,
@@ -468,6 +504,8 @@ def batched_fused_marlin_moe(
         block_size=block_size_m,
         expert_num_tokens=expert_num_tokens,
     )
+
+    sorted_token_ids = _canonicalize_sorted_token_ids(sorted_token_ids, expert_ids)
 
     # TODO (varun): This can be avoided by plumbing the marlin kernel to
     # ignore topk_weights when topk_weights_ptr is a nullptr.
