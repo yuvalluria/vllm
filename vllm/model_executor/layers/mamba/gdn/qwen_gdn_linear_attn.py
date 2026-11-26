@@ -2089,13 +2089,13 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             )
         cu = self._bi_decode_cu
         outs = []
-        states = []
+        last = None
         for i in range(num_decodes):
-            # Gather per-request state slice to avoid cross-request contamination
-            state_idx = state_indices[i : i + 1]
-            initial_state_i = ssm_state[state_idx]
+            # Gather per-request state to avoid cross-request contamination
+            state_idx_i = state_indices[i : i + 1]
+            initial_state_i = ssm_state[state_idx_i]
 
-            out_i, state_i = fused_sigmoid_gating_delta_rule_update(
+            out_i, last_i = fused_sigmoid_gating_delta_rule_update(
                 A_log=self.A_log,
                 a=a[i : i + 1],
                 b=b[i : i + 1],
@@ -2106,17 +2106,14 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                 initial_state=initial_state_i,
                 inplace_final_state=False,
                 cu_seqlens=cu,
-                ssm_state_indices=torch.tensor([0], dtype=torch.int64, device=q.device),
+                ssm_state_indices=torch.tensor([0], dtype=torch.int32, device=q.device),
                 use_qk_l2norm_in_kernel=True,
             )
             outs.append(out_i)
-            states.append(state_i)
-
-        # Update ssm_state with gathered outputs
-        last_state = torch.cat(states, dim=0)
-        scatter_states(ssm_state, last_state, state_indices)
-
-        return torch.cat(outs, dim=1), last_state[-1:]
+            # Scatter the updated state back to its proper place in ssm_state
+            scatter_states(ssm_state, last_i, state_idx_i)
+            last = last_i
+        return torch.cat(outs, dim=1), last
 
     def _forward_core(
         self,
