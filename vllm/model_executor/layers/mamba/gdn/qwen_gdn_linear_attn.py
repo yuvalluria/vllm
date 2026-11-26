@@ -2088,6 +2088,10 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                 [0, 1], dtype=torch.int32, device=q.device
             )
         cu = self._bi_decode_cu
+
+        # Create a working copy to prevent in-place modification issues across iterations
+        ssm_state_working = ssm_state.clone()
+
         outs = []
         last = None
         for i in range(num_decodes):
@@ -2099,15 +2103,16 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                 q=q[:, i : i + 1],
                 k=k[:, i : i + 1],
                 v=v[:, i : i + 1],
-                initial_state=ssm_state,
-                inplace_final_state=False,
+                initial_state=ssm_state_working,
+                inplace_final_state=True,
                 cu_seqlens=cu,
                 ssm_state_indices=state_indices[i : i + 1],
                 use_qk_l2norm_in_kernel=True,
             )
             outs.append(out_i)
-            # Scatter state back immediately (batch size 1 scatter per iteration)
-            scatter_states(ssm_state, last, state_indices[i : i + 1])
+
+        # Update original ssm_state from working copy
+        ssm_state.copy_(ssm_state_working)
         return torch.cat(outs, dim=1), last
 
     def _forward_core(
