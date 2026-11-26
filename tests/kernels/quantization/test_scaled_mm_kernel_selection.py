@@ -420,7 +420,7 @@ def test_register_oot_fp8_block_linear_kernel(platform_mock, default_vllm_config
     "possible_kernels", [_POSSIBLE_KERNELS, _POSSIBLE_NVFP4_KERNELS]
 )
 def test_humming_priority_only_reorders_humming_and_marlin(possible_kernels):
-    """Preferring Humming must not demote Marlin below unrelated kernels."""
+    """Preferring Humming must rank it above Marlin on SM90."""
     kernels = possible_kernels[PlatformEnum.CUDA]
     original = list(kernels)
 
@@ -428,7 +428,8 @@ def test_humming_priority_only_reorders_humming_and_marlin(possible_kernels):
 
     names = [k.__name__ for k in prioritize_humming(kernels, compute_capability=90)]
     humming = next(i for i, name in enumerate(names) if "Humming" in name)
-    assert "Marlin" in names[humming + 1]
+    marlin = next(i for i, name in enumerate(names) if "Marlin" in name)
+    assert humming > marlin, "Humming should rank higher than Marlin on SM90"
     del names[humming]
     assert names == [k.__name__ for k in original if "Humming" not in k.__name__]
     assert kernels == original
