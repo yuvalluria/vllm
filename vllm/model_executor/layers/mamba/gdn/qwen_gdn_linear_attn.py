@@ -833,9 +833,6 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         # custom op or Dynamo stream tracing; not validated). Plain cuBLAS ba GEMM only:
         # FlashInfer GEMMs share a process-wide workspace. Off with ubatching and LoRA.
         self._ba_stream = None
-<<<<<<< HEAD
-        ba_method = getattr(self.in_proj_ba, "quant_method", None)
-=======
         # Lazily populated by _bi_decode_recurrence; cached rather than
         # recreated per call since it is not allowed to allocate a tensor
         # from CPU literals once CUDA graph capture has started.
@@ -2485,7 +2482,6 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
 
         # 2.2: Process non-spec-decode part
         if split_non_spec:
-<<<<<<< HEAD
             if self.use_replayssm:
                 out_decode = torch.empty(
                     num_decode_tokens,
@@ -2508,43 +2504,35 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                 query_decode, key_decode, value_decode = self.rearrange_mixed_qkv(
                     mixed_qkv_non_spec[:num_decode_tokens]  # type: ignore[index]
                 )
-=======
-            query_decode, key_decode, value_decode = self.rearrange_mixed_qkv(
-                mixed_qkv_non_spec[:num_decode_tokens]  # type: ignore[index]
-            )
-            if envs.VLLM_BATCH_INVARIANT:
-                core_attn_out_decode, _ = self._bi_decode_recurrence(
-                    a=a[:num_decode_tokens],
-                    b=b[:num_decode_tokens],
-                    q=query_decode,
-                    k=key_decode,
-                    v=value_decode,
-                    ssm_state=ssm_state,
-                    state_indices=non_spec_state_indices_tensor,
-                    num_decodes=attn_metadata.num_decodes,
-                )
-            else:
->>>>>>> f18f5397c1 ([Feature] Open the GDN_ATTN batch invariance gate and fix the blocking defects)
-                core_attn_out_decode, _ = fused_sigmoid_gating_delta_rule_update(
-                    A_log=self.A_log,
-                    a=a[:num_decode_tokens],
-                    b=b[:num_decode_tokens],
-                    dt_bias=self.dt_bias,
-                    q=query_decode,
-                    k=key_decode,
-                    v=value_decode,
-                    initial_state=ssm_state,
-                    inplace_final_state=True,
-                    cu_seqlens=non_spec_query_start_loc[  # type: ignore[index]
-                        : attn_metadata.num_decodes + 1
-                    ],
-                    ssm_state_indices=non_spec_state_indices_tensor,
-                    use_qk_l2norm_in_kernel=True,
-<<<<<<< HEAD
-                    beta_scale=self.beta_scale,
-=======
->>>>>>> f18f5397c1 ([Feature] Open the GDN_ATTN batch invariance gate and fix the blocking defects)
-                )
+                if envs.VLLM_BATCH_INVARIANT:
+                    core_attn_out_decode, _ = self._bi_decode_recurrence(
+                        a=a[:num_decode_tokens],
+                        b=b[:num_decode_tokens],
+                        q=query_decode,
+                        k=key_decode,
+                        v=value_decode,
+                        ssm_state=ssm_state,
+                        state_indices=non_spec_state_indices_tensor,
+                        num_decodes=attn_metadata.num_decodes,
+                    )
+                else:
+                    core_attn_out_decode, _ = fused_sigmoid_gating_delta_rule_update(
+                        A_log=self.A_log,
+                        a=a[:num_decode_tokens],
+                        b=b[:num_decode_tokens],
+                        dt_bias=self.dt_bias,
+                        q=query_decode,
+                        k=key_decode,
+                        v=value_decode,
+                        initial_state=ssm_state,
+                        inplace_final_state=True,
+                        cu_seqlens=non_spec_query_start_loc[  # type: ignore[index]
+                            : attn_metadata.num_decodes + 1
+                        ],
+                        ssm_state_indices=non_spec_state_indices_tensor,
+                        use_qk_l2norm_in_kernel=True,
+                        beta_scale=self.beta_scale,
+                    )
         else:
             core_attn_out_decode = None
 
@@ -2596,28 +2584,6 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                     )
                 )
             else:
-<<<<<<< HEAD
-                initial_state = gather_initial_states(
-                    ssm_state, prefill_state_indices, prefill_has_initial_state
-                )
-                (
-                    core_attn_out_non_spec,
-                    last_recurrent_state,
-                ) = self.chunk_gated_delta_rule(
-                    q=query_non_spec,
-                    k=key_non_spec,
-                    v=value_non_spec,
-                    g=g_non_spec,
-                    beta=beta_non_spec,
-                    initial_state=initial_state,
-                    output_final_state=True,
-                    cu_seqlens=attn_metadata.prefill_query_start_loc,
-                    chunk_indices=attn_metadata.chunk_indices,
-                    chunk_offsets=attn_metadata.chunk_offsets,
-                    use_qk_l2norm_in_kernel=False,
-                    aiter_prefill_metadata=attn_metadata.aiter_prefill_metadata,
-                )
-=======
                 initial_state = ssm_state[prefill_state_indices]
                 initial_state[~prefill_has_initial_state, ...] = 0
                 if envs.VLLM_BATCH_INVARIANT:
@@ -2674,7 +2640,6 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                         use_qk_l2norm_in_kernel=False,
                         aiter_prefill_metadata=attn_metadata.aiter_prefill_metadata,
                     )
->>>>>>> f18f5397c1 ([Feature] Open the GDN_ATTN batch invariance gate and fix the blocking defects)
             # Init cache
             scatter_states(ssm_state, last_recurrent_state, prefill_state_indices)
             if self.use_replayssm and self._plans_replayssm_decode:
@@ -2692,26 +2657,6 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                     [core_attn_out_decode, core_attn_out_non_spec], dim=1
                 )
         elif attn_metadata.num_decodes > 0:
-<<<<<<< HEAD
-            core_attn_out_non_spec, last_recurrent_state = (
-                fused_sigmoid_gating_delta_rule_update(
-                    A_log=self.A_log,
-                    a=a,
-                    b=b,
-                    dt_bias=self.dt_bias,
-                    q=query_non_spec,
-                    k=key_non_spec,
-                    v=value_non_spec,
-                    initial_state=ssm_state,
-                    inplace_final_state=True,
-                    cu_seqlens=non_spec_query_start_loc[  # type: ignore[index]
-                        : attn_metadata.num_decodes
-                        + 1  # type: ignore[attr-defined]
-                    ],
-                    ssm_state_indices=non_spec_state_indices_tensor,
-                    use_qk_l2norm_in_kernel=True,
-                    beta_scale=self.beta_scale,
-=======
             if envs.VLLM_BATCH_INVARIANT:
                 core_attn_out_non_spec, last_recurrent_state = (
                     self._bi_decode_recurrence(
@@ -2743,8 +2688,8 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                         ],
                         ssm_state_indices=non_spec_state_indices_tensor,
                         use_qk_l2norm_in_kernel=True,
+                        beta_scale=self.beta_scale,
                     )
->>>>>>> f18f5397c1 ([Feature] Open the GDN_ATTN batch invariance gate and fix the blocking defects)
                 )
         else:
             core_attn_out_non_spec, last_recurrent_state = None, None
