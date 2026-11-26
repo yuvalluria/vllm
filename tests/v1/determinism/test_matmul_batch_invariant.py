@@ -167,6 +167,24 @@ def test_get_matmul_config_pinned_to_max_num_seqs():
     if cfg_8 == cfg_9:
         pytest.skip("M=8 and M=9 happen to share a bucket on this architecture")
 
+    # Requirement #1 from Wentao: Show kernel output differs for M=8 vs M=9
+    # without the patch (when configs are different)
+    device = torch.device(DEVICE_TYPE)
+    torch.manual_seed(42)
+    a_8 = torch.rand((8, K), dtype=dtype, device=device)
+    a_9 = torch.rand((9, K), dtype=dtype, device=device)
+    b = torch.rand((K, N), dtype=dtype, device=device)
+
+    out_8 = matmul_persistent(a_8, b, cfg_8)
+    out_9_row0 = matmul_persistent(a_9[:1], b, cfg_9)
+
+    # Verify configs are different (bucket switch happened)
+    assert cfg_8 != cfg_9, "Test setup: configs should differ without pinning"
+    # Row 0 outputs are DIFFERENT due to different configs (different num_warps → different accumulation order)
+    assert not torch.equal(out_8[0], out_9_row0[0]), (
+        "Kernel output should differ for M=8 vs M=9 when configs differ (this proves the bug exists)"
+    )
+
     # With pinning to max_num_seqs=16, both must return the same config.
     set_config_max_num_seqs(16)
     try:
@@ -174,6 +192,15 @@ def test_get_matmul_config_pinned_to_max_num_seqs():
         pinned_9 = _get_matmul_config(9, N, K, dtype, default)
         assert pinned_8 == pinned_9, (
             "Config must be identical for M=8 and M=9 when pinned to max_num_seqs=16"
+        )
+
+        # Requirement #1 (continued): Show kernel output is IDENTICAL with the patch
+        out_8_pinned = matmul_persistent(a_8, b, pinned_8)
+        out_9_pinned = matmul_persistent(a_9[:1], b, pinned_9)
+
+        # Row 0 outputs are IDENTICAL because configs are now the same
+        assert torch.equal(out_8_pinned[0], out_9_pinned[0]), (
+            "Kernel output must be identical for M=8 and M=9 when pinned to same config"
         )
     finally:
         set_config_max_num_seqs(0)
